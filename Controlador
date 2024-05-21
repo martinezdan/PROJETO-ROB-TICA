@@ -1,0 +1,145 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <webots/robot.h>
+#include <webots/motor.h>
+#include <webots/supervisor.h>
+#include <webots/distance_sensor.h>
+#include <webots/led.h>
+
+#define TIME_STEP 256
+#define QtddSensoresProx 8
+#define QtddLeds 10
+#define OBSTACLE_THRESHOLD 200
+#define MAX_SPEED 6.28
+#define TOLERANCIA 0.001
+
+int main(int argc, char **argv) {
+  wb_robot_init();
+  
+  // Configuração dos motores
+  WbDeviceTag MotorEsquerdo, MotorDireito;
+  MotorEsquerdo = wb_robot_get_device("left wheel motor");
+  MotorDireito = wb_robot_get_device("right wheel motor");
+  wb_motor_set_position(MotorEsquerdo, INFINITY);
+  wb_motor_set_position(MotorDireito, INFINITY);
+  wb_motor_set_velocity(MotorEsquerdo, 0);
+  wb_motor_set_velocity(MotorDireito, 0);
+  
+  // Configuração dos sensores de proximidade
+  WbDeviceTag SensorProx[QtddSensoresProx];
+  for (int i = 0; i < QtddSensoresProx; i++) {
+    char sensor_name[10];
+    sprintf(sensor_name, "ps%d", i);
+    SensorProx[i] = wb_robot_get_device(sensor_name);
+    wb_distance_sensor_enable(SensorProx[i], TIME_STEP);
+  }
+
+  // Configuração dos LEDs
+  WbDeviceTag leds[QtddLeds];
+  for (int i = 0; i < QtddLeds; i++) {
+    char led_name[5];
+    sprintf(led_name, "led%d", i);
+    leds[i] = wb_robot_get_device(led_name);
+    wb_led_set(leds[i], 0);
+  }
+
+  // Obtendo a posição inicial da caixa leve
+  double last_caixa_position[3] = {0.0, 0.0, 0.0};
+  bool caixa_arrastada = false;
+  int led_state = 0;
+
+  WbNodeRef caixa = wb_supervisor_node_get_from_def("caixa");
+  if (caixa != NULL) {
+    const double *caixa_posicao = wb_supervisor_node_get_position(caixa);
+    if (caixa_posicao != NULL) {
+      last_caixa_position[0] = caixa_posicao[0];
+      last_caixa_position[1] = caixa_posicao[1];
+      last_caixa_position[2] = caixa_posicao[2];
+    } else {
+      printf("Erro ao obter a posição da caixa leve.\n");
+    }
+  } else {
+    printf("Caixa leve não encontrada.\n");
+  }
+
+  double AceleradorDireito = 1.0, AceleradorEsquerdo = 1.0;
+  int counter = 0;
+  
+  // Semente para o gerador de números aleatórios
+  srand(time(NULL));
+
+  while (wb_robot_step(TIME_STEP) != -1) {
+    if (!caixa_arrastada) {
+      // Lê os valores dos sensores de proximidade
+      double LeituraSensorProx[QtddSensoresProx];
+      for (int i = 0; i < QtddSensoresProx; i++) {
+        LeituraSensorProx[i] = wb_distance_sensor_get_value(SensorProx[i]) - 60;
+      }
+
+      // Lógica de movimentação
+      if (LeituraSensorProx[0] > OBSTACLE_THRESHOLD || LeituraSensorProx[1] > OBSTACLE_THRESHOLD ||
+          LeituraSensorProx[6] > OBSTACLE_THRESHOLD || LeituraSensorProx[7] > OBSTACLE_THRESHOLD) {
+        // Se algum dos sensores detectar um obstáculo, faça uma curva
+        AceleradorEsquerdo = 0.5;
+        AceleradorDireito = -0.5;
+        counter++;
+      } else {
+        // Se nenhum obstáculo for detectado, siga em frente
+        AceleradorEsquerdo = 1;
+        AceleradorDireito = 1;
+        counter = 0;
+      }
+
+      // Se o contador exceder um certo limite, faça uma curva mais acentuada
+      if (counter > 10) {
+        AceleradorEsquerdo = 0.5;
+        AceleradorDireito = -1;
+      }
+
+      // Adicione uma chance de virar à esquerda ou à direita de forma aleatória
+      int num = rand() % 100;
+      if (num > 95) {
+        AceleradorEsquerdo = -1;
+        AceleradorDireito = 1;
+      } else if (num < 5) {
+        AceleradorEsquerdo = -0.5;
+        AceleradorDireito = -1;
+      }
+
+      // Define as velocidades dos motores
+      wb_motor_set_velocity(MotorEsquerdo, MAX_SPEED * AceleradorEsquerdo);
+      wb_motor_set_velocity(MotorDireito, MAX_SPEED * AceleradorDireito);
+
+      // Verifica a posição da caixa
+      const double *caixa_posicao = wb_supervisor_node_get_position(caixa);
+      if (caixa_posicao != NULL) {
+        if (fabs(last_caixa_position[0] - caixa_posicao[0]) > TOLERANCIA ||
+            fabs(last_caixa_position[1] - caixa_posicao[1]) > TOLERANCIA ||
+            fabs(last_caixa_position[2] - caixa_posicao[2]) > TOLERANCIA) {
+          caixa_arrastada = true;
+        }
+        last_caixa_position[0] = caixa_posicao[0];
+        last_caixa_position[1] = caixa_posicao[1];
+        last_caixa_position[2] = caixa_posicao[2];
+      } else {
+        printf("Erro ao obter a posição da caixa leve.\n");
+      }
+    }
+
+    if (caixa_arrastada) {
+      // Para o robô
+      wb_motor_set_velocity(MotorEsquerdo, 0);
+      wb_motor_set_velocity(MotorDireito, 0);
+
+      // Pisca os LEDs
+      led_state = !led_state;
+      for (int i = 0; i < QtddLeds; i++) {
+        wb_led_set(leds[i], led_state);
+      }
+    }
+  }
+
+  wb_robot_cleanup();
+  return 0;
+}
